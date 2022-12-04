@@ -1,0 +1,172 @@
+---
+- name: Update and upgrade apt packages
+  become: true
+  ansible.builtin.apt:
+    upgrade: true
+    update_cache: true
+
+- name: Add nodes to host_file
+  become: true
+  ansible.builtin.blockinfile:
+    dest: /etc/hosts
+    block: |
+      "{{ nodes[0] }}"
+      "{{ nodes[1] }}"
+      "{{ nodes[2] }}"
+
+- name: Remove Swap entry from /etc/fstab
+  become: true
+  ansible.builtin.lineinfile:
+    dest: /etc/fstab
+    regexp: swap
+    state: absent
+
+- name: Install dependencies
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+    name: "{{ pre_packages }}"
+    state: present
+
+- name: Ensure additional dependencies are installed (on Ubuntu < 20.04 and any other systems)
+  become: true
+  ansible.builtin.apt:
+    name: gnupg2
+    state: present
+  when: ansible_distribution != 'Ubuntu' or ansible_distribution_version is version('20.04', '<')
+
+- name: Ensure additional dependencies are installed (on Ubuntu >= 20.04)
+  become: true
+  ansible.builtin.apt:
+    name: gnupg
+    state: present
+  when: ansible_distribution == 'Ubuntu' and ansible_distribution_version is version('20.04', '>=')
+
+- name: Add Docker GPG apt Key
+  become: true
+  ansible.builtin.apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add repository into sources list
+  become: true
+  ansible.builtin.apt_repository:
+    repo: "deb https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    state: present
+
+- name: Install containerd
+  become: true
+  ansible.builtin.apt:
+    pkg: containerd.io
+    state: present
+    update_cache: true
+
+- name: Install cni plugins
+  become: true
+  ansible.builtin.unarchive:
+    src: "{{ cni_link }}"
+    dest: /opt/
+    creates: /opt/cni/bin/
+    remote_src: true
+
+- name: Add conf for containerd
+  become: true
+  ansible.builtin.blockinfile:
+    path: /etc/modules-load.d/containerd.conf
+    block: |
+      overlay
+      br_netfilter
+    create: true
+    mode: 0644
+
+- name: Modprobe
+  become: true
+  ansible.builtin.shell: |
+    modprobe overlay
+    modprobe br_netfilter
+  changed_when: false
+
+- name: Create a empty file for kubernetes sysctl params
+  become: true
+  ansible.builtin.copy:
+    content: ""
+    dest: /etc/sysctl.d/99-kubernetes-cri.conf
+    force: false
+    mode: 0644
+  changed_when: false
+
+- name: Add conf for cri
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/sysctl.d/99-kubernetes-cri.conf
+    line: "{{ item }}"
+  with_items:
+    - "net.bridge.bridge-nf-call-iptables  = 1"
+    - "net.ipv4.ip_forward                 = 1"
+    - "net.bridge.bridge-nf-call-ip6tables = 1"
+  notify: Restart systemd
+
+- name: Create containerd config file
+  become: true
+  ansible.builtin.file:
+    path: "/etc/containerd/config.toml"
+    state: "touch"
+    mode: 0644
+  changed_when: false
+
+- name: Set Cgroup driver to systemd
+  become: true
+  ansible.builtin.shell: |
+    containerd config default>/etc/containerd/config.toml
+    sudo sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
+  changed_when: false
+
+- name: Make sure SystemdCgroup != false
+  ansible.builtin.lineinfile:
+    path: /etc/containerd/config.toml
+    state: absent
+    line: '            SystemdCgroup = false'
+  notify: Restart and enable containerd
+  changed_when: false
+
+- name: Install dependencies
+  become: true
+  ansible.builtin.apt:
+    name: "{{ pre_packages_docker }}"
+    state: present
+
+- name: Add an Apt signing key for kubelet, kubeadm, kubectl
+  become: true
+  ansible.builtin.apt_key:
+    url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+    state: present
+
+- name: Add K8s Source
+  become: true
+  ansible.builtin.blockinfile:
+    path: "/etc/apt/sources.list.d/kubernetes.list"
+    block: |
+      deb https://apt.kubernetes.io/ kubernetes-xenial main
+    create: true
+    mode: 0644
+
+- name: Install kubelet, kubeadm, kubectl
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+    name: "{{ packages_docker }}"
+    state: present
+  notify: Hold kubelet, kubeadm, kubectl
+
+- name: Enable kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+
+- name: Reboot all the kubernetes nodes
+  become: true
+  ansible.builtin.reboot:
+    post_reboot_delay: 10
+    reboot_timeout: 40
+    connect_timeout: 60
+    test_command: uptime

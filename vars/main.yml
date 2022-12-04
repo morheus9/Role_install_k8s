@@ -1,0 +1,15 @@
+---
+pre_packages:
+  - ca-certificates
+  - curl
+  - lsb-release
+
+pre_packages_docker:
+  - curl
+  - wget
+  - apt-transport-https
+
+packages_docker:
+  - kubelet
+  - kubeadm
+  - kubectl
