@@ -166,7 +166,7 @@
 - name: Reboot all the kubernetes nodes
   become: true
   ansible.builtin.reboot:
-    post_reboot_delay: 10
-    reboot_timeout: 40
+    post_reboot_delay: 20
+    reboot_timeout: 60
     connect_timeout: 60
     test_command: uptime
