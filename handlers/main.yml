@@ -11,6 +11,7 @@
     name: containerd
 
 - name: Hold kubelet, kubeadm, kubectl
+  become: true
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: hold
